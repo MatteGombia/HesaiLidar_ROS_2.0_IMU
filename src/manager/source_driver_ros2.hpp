@@ -32,6 +32,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 #include <std_msgs/msg/u_int8_multi_array.hpp>
+#include <sensor_msgs/msg/imu.hpp>
 #include <sstream>
 #include <hesai_ros_driver/msg/udp_frame.hpp>
 #include <hesai_ros_driver/msg/udp_packet.hpp>
@@ -75,6 +76,8 @@ protected:
   void SendPointCloud(const LidarDecodedFrame<LidarPointXYZIRT>& msg);
   // Used to publish the original pcake through 'ros_send_packet_topic'
   void SendPacket(const UdpFrame_t&  ros_msg, double timestamp);
+  // Used to publish IMU msg
+  void SendImu(const UdpFrame_t&  ros_msg, double timestamp);
 
   // Used to publish the Correction file through 'ros_send_correction_topic'
   void SendCorrection(const u8Array_t& msg);
@@ -102,6 +105,7 @@ protected:
   rclcpp::Subscription<std_msgs::msg::UInt8MultiArray>::SharedPtr crt_sub_;
   rclcpp::Subscription<hesai_ros_driver::msg::UdpFrame>::SharedPtr pkt_sub_;
   rclcpp::Publisher<hesai_ros_driver::msg::UdpFrame>::SharedPtr pkt_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr imu_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_;
   rclcpp::Publisher<hesai_ros_driver::msg::Firetime>::SharedPtr firetime_pub_;
   rclcpp::Publisher<std_msgs::msg::UInt8MultiArray>::SharedPtr crt_pub_;
@@ -146,6 +150,9 @@ inline void SourceDriver::Init(const YAML::Node& config)
   if (driver_param.input_param.send_packet_ros && driver_param.input_param.source_type != DATA_FROM_ROS_PACKET) {
     pkt_pub_ = node_ptr_->create_publisher<hesai_ros_driver::msg::UdpFrame>(driver_param.input_param.ros_send_packet_topic, 10);
   }
+  if (driver_param.input_param.send_imu_ros && driver_param.input_param.source_type != DATA_FROM_ROS_PACKET) {
+    imu_pub_ = node_ptr_->create_publisher<sensor_msgs::msg::Imu>(driver_param.input_param.ros_send_imu_topic, 10);
+  }
 
   if (driver_param.input_param.source_type == DATA_FROM_ROS_PACKET) {
     pkt_sub_ = node_ptr_->create_subscription<hesai_ros_driver::msg::UdpFrame>(driver_param.input_param.ros_recv_packet_topic, 10, 
@@ -167,6 +174,9 @@ inline void SourceDriver::Init(const YAML::Node& config)
   driver_ptr_->RegRecvCallback(std::bind(&SourceDriver::SendPointCloud, this, std::placeholders::_1));
   if(driver_param.input_param.send_packet_ros && driver_param.input_param.source_type != DATA_FROM_ROS_PACKET){
     driver_ptr_->RegRecvCallback(std::bind(&SourceDriver::SendPacket, this, std::placeholders::_1, std::placeholders::_2)) ;
+  }
+  if(driver_param.input_param.send_imu_ros && driver_param.input_param.source_type != DATA_FROM_ROS_PACKET){
+    driver_ptr_->RegRecvCallbackImu(std::bind(&SourceDriver::SendImu, this, std::placeholders::_1, std::placeholders::_2)) ;
   }
   if (driver_param.input_param.ros_send_packet_loss_topic != NULL_TOPIC) {
   driver_ptr_->RegRecvCallback(std::bind(&SourceDriver::SendPacketLoss, this, std::placeholders::_1, std::placeholders::_2));
@@ -204,6 +214,40 @@ inline void SourceDriver::Stop()
 inline void SourceDriver::SendPacket(const UdpFrame_t& msg, double timestamp)
 {
   pkt_pub_->publish(ToRosMsg(msg, timestamp));
+}
+
+inline void SourceDriver::SendImu(const UdpFrame_t& msg, double timestamp)
+{
+  sensor_msgs::msg::Imu msg_imu;
+  msg_imu.header.stamp.sec = (uint32_t)floor(timestamp);
+  msg_imu.header.stamp.nanosec = (uint32_t)round((timestamp - msg_imu.header.stamp.sec) * 1e9);
+  msg_imu.header.frame_id = frame_id_;
+
+  unsigned size = msg[0].packet_len;
+
+  double acceleration_unit = ((msg[0].buffer[size-23] << 8) + msg[0].buffer[size-24]) / 1000.0;
+  double angular_velocity_unit = ((msg[0].buffer[size-21] << 8) + msg[0].buffer[size-22]) / 100.0;
+
+  double mg_to_ms2 = 9.80665 / 1000;
+  double mdps_to_rads = 3.141592 / 180 / 1000;
+
+  int16_t linear_acceleration_x = (int16_t)((msg[0].buffer[size-15] << 8) + msg[0].buffer[size-16]);
+  int16_t linear_acceleration_y = (int16_t)((msg[0].buffer[size-13] << 8) + msg[0].buffer[size-14]);
+  int16_t linear_acceleration_z = (int16_t)((msg[0].buffer[size-11] << 8) + msg[0].buffer[size-12]);
+
+  int16_t angular_velocity_x = (int16_t)((msg[0].buffer[size-9] << 8) + msg[0].buffer[size-10]);
+  int16_t angular_velocity_y = (int16_t)((msg[0].buffer[size-7] << 8) + msg[0].buffer[size-8]);
+  int16_t angular_velocity_z = (int16_t)((msg[0].buffer[size-5] << 8) + msg[0].buffer[size-6]);
+
+  msg_imu.linear_acceleration.x = linear_acceleration_x * acceleration_unit * mg_to_ms2;
+  msg_imu.linear_acceleration.y = linear_acceleration_y * acceleration_unit * mg_to_ms2;
+  msg_imu.linear_acceleration.z = linear_acceleration_z * acceleration_unit * mg_to_ms2;
+
+  msg_imu.angular_velocity.x = angular_velocity_x * angular_velocity_unit * mdps_to_rads;
+  msg_imu.angular_velocity.y = angular_velocity_y * angular_velocity_unit * mdps_to_rads;
+  msg_imu.angular_velocity.z = angular_velocity_z * angular_velocity_unit * mdps_to_rads;
+  
+  imu_pub_->publish(msg_imu);
 }
 
 inline void SourceDriver::SendPointCloud(const LidarDecodedFrame<LidarPointXYZIRT>& msg)
