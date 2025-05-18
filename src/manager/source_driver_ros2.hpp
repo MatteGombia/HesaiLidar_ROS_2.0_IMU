@@ -252,12 +252,10 @@ inline void SourceDriver::SendImuConfig(const LidarImuData& msg)
 inline sensor_msgs::msg::PointCloud2 SourceDriver::ToRosMsg(const LidarDecodedFrame<LidarPointXYZIRT>& frame, const std::string& frame_id)
 {
   sensor_msgs::msg::PointCloud2 ros_msg;
-
+  size_t n_real_points = frame.points_num;
   int fields = 6;
   ros_msg.fields.clear();
   ros_msg.fields.reserve(fields);
-  ros_msg.width = frame.points_num; 
-  ros_msg.height = 1; 
 
   int offset = 0;
   offset = addPointField(ros_msg, "x", 1, sensor_msgs::msg::PointField::FLOAT32, offset);
@@ -268,9 +266,8 @@ inline sensor_msgs::msg::PointCloud2 SourceDriver::ToRosMsg(const LidarDecodedFr
   offset = addPointField(ros_msg, "timestamp", 1, sensor_msgs::msg::PointField::FLOAT64, offset);
 
   ros_msg.point_step = offset;
-  ros_msg.row_step = ros_msg.width * ros_msg.point_step;
+  ros_msg.data.resize(n_real_points * ros_msg.point_step);
   ros_msg.is_dense = false;
-  ros_msg.data.resize(frame.points_num * ros_msg.point_step);
 
   sensor_msgs::PointCloud2Iterator<float> iter_x_(ros_msg, "x");
   sensor_msgs::PointCloud2Iterator<float> iter_y_(ros_msg, "y");
@@ -280,6 +277,11 @@ inline sensor_msgs::msg::PointCloud2 SourceDriver::ToRosMsg(const LidarDecodedFr
   sensor_msgs::PointCloud2Iterator<double> iter_timestamp_(ros_msg, "timestamp");
   for (size_t i = 0; i < frame.points_num; i++)
   {
+    if(frame.points[i].x == 0 && frame.points[i].y == 0 && frame.points[i].z == 0){
+      n_real_points--;
+      continue;
+    }
+
     LidarPointXYZIRT point = frame.points[i];
     *iter_x_ = point.x;
     *iter_y_ = point.y;
@@ -294,8 +296,12 @@ inline sensor_msgs::msg::PointCloud2 SourceDriver::ToRosMsg(const LidarDecodedFr
     ++iter_ring_;
     ++iter_timestamp_;   
   }
+  ros_msg.width = n_real_points; 
+  ros_msg.height = 1; 
+  ros_msg.row_step = n_real_points * ros_msg.point_step;
+  ros_msg.data.resize(n_real_points * ros_msg.point_step);
   // printf("HesaiLidar Runing Status [standby mode:%u]  |  [speed:%u]\n", frame.work_mode, frame.spin_speed);
-  printf("frame:%d points:%u packet:%d start time:%lf end time:%lf\n",frame.frame_index, frame.points_num, frame.packet_num, frame.points[0].timestamp, frame.points[frame.points_num - 1].timestamp) ;
+  printf("frame:%d points:%u packet:%d start time:%lf end time:%lf\n",frame.frame_index, ros_msg.width, frame.packet_num, frame.points[0].timestamp, frame.points[frame.points_num - 1].timestamp) ;
   std::cout.flush();
   auto sec = (uint64_t)floor(frame.points[0].timestamp);
   if (sec <= std::numeric_limits<int32_t>::max()) {
